@@ -17,12 +17,13 @@ shufflenet_tuning/
 │   └── shufflenet.py           # ShuffleNetV2 full model definition
 │
 ├── engine/
-│   ├── trainer.py              # Training loop (loss, optimizer, scheduler)
+│   ├── trainer.py              # Training loop (loss, optimizer, scheduler) [MODIFIED]
 │   ├── evaluator.py            # Accuracy evaluation on test split
-│   └── profiler.py             # Isolated energy + latency benchmarking
+│   └── profiler.py             # Isolated energy + latency benchmarking [MODIFIED]
 │
 ├── experiments/
-│   └── grid_search.py          # Outer loop: runs all (width × threads × batch) combos
+│   ├── train_phase1.py         # Phase 1: GPU-based accuracy training [NEW]
+│   └── profile_phase2.py       # Phase 2: CPU-only energy profiling [NEW]
 │
 ├── results/
 │   └── experiment_log.csv      # Auto-generated flat results log (gitignored raw data)
@@ -30,7 +31,7 @@ shufflenet_tuning/
 ├── scripts/
 │   └── check_hardware.sh       # Pre-flight CPU vendor + core count check
 │
-└── main.py                     # Single entrypoint — run everything from here
+└── main.py                     # Single entrypoint — run everything from here [MODIFIED]
 ```
 
 ---
@@ -48,20 +49,29 @@ Total grid: **72 unique configurations** (4 × 3 × 3 × 2)
 
 ---
 
-## Quick Start
+## Quick Start (Two-Phase Strategy)
 
+To bypass the CPU training bottleneck, we decouple accuracy from energy profiling:
+
+### 1. Install Dependencies
 ```bash
-# 1. Check your hardware first
-bash scripts/check_hardware.sh
-
-# 2. Install dependencies
 pip install torch torchvision medmnist codecarbon
-
-# 3. Run the full grid search
-python main.py
-
-# 4. Results land in results/experiment_log.csv
 ```
+
+### 2. Phase 1: The Accuracy Run (Run on GPU)
+Train only the **8 unique configurations** that affect accuracy on a GPU (e.g. Google Colab, Kaggle, or local GPU):
+```bash
+python main.py --phase1 --epochs 10 --train-batch-size 64
+```
+* **Output**: Trained weights saved to `checkpoints/` and accuracy registry created in `checkpoints/accuracy_registry.json`.
+
+### 3. Phase 2: The Energy Profiling Run (Run on CPU)
+Transfer the `checkpoints/` folder to your target local Intel CPU and run the offline energy profiling for all **72 configurations** in under 2 minutes:
+```bash
+python main.py --phase2
+```
+* **Output**: Combined accuracy and energy/latency metrics logged to `results/experiment_log.csv`.
+
 
 ---
 

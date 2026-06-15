@@ -52,7 +52,7 @@ def profile(
         ProfileResult with energy_kwh, latency_sec, and throughput.
     """
     try:
-        from codecarbon import EmissionsTracker
+        from codecarbon import OfflineEmissionsTracker
     except ImportError:
         raise ImportError(
             "codecarbon is required for energy profiling.\n"
@@ -75,9 +75,9 @@ def profile(
     # ── Timed + tracked measurement ───────────────────────────────────────────
     print(f"  Profiler: measuring ({cfg.num_benchmark_runs} passes)...")
 
-    tracker = EmissionsTracker(
+    tracker = OfflineEmissionsTracker(
+        country_iso_code="USA",
         measure_power_secs=1,
-        display_to_term=False,
         log_level="error",            # Suppress verbose tracker output
     )
     tracker.start()

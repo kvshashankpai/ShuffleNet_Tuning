@@ -22,7 +22,7 @@ from configs.experiment_config import ExperimentConfig
 from models.shufflenet import ShuffleNetV2
 
 
-def build_dataloaders(cfg: ExperimentConfig) -> tuple[DataLoader, DataLoader]:
+def build_dataloaders(cfg: ExperimentConfig, device: torch.device = None) -> tuple[DataLoader, DataLoader]:
     """
     Builds train and test DataLoaders for PathMNIST.
 
@@ -49,19 +49,21 @@ def build_dataloaders(cfg: ExperimentConfig) -> tuple[DataLoader, DataLoader]:
     train_dataset = PathMNIST(split="train", transform=transform, download=True)
     test_dataset  = PathMNIST(split="test",  transform=transform, download=True)
 
+    pin_memory = device is not None and device.type == "cuda"
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
-        num_workers=2,
-        pin_memory=False,   # CPU-only — pin_memory has no benefit
+        num_workers=0,
+        pin_memory=pin_memory,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=2,
-        pin_memory=False,
+        num_workers=0,
+        pin_memory=pin_memory,
     )
 
     return train_loader, test_loader
@@ -77,12 +79,13 @@ def build_model(cfg: ExperimentConfig) -> ShuffleNetV2:
     )
 
 
-def train(cfg: ExperimentConfig) -> tuple[ShuffleNetV2, DataLoader, DataLoader]:
+def train(cfg: ExperimentConfig, device: torch.device = None) -> tuple[ShuffleNetV2, DataLoader, DataLoader]:
     """
     Trains a ShuffleNetV2 for the given config.
 
     Args:
         cfg: Fully populated ExperimentConfig for this run.
+        device: Device to train on (defaults to CUDA if available, else CPU).
 
     Returns:
         Tuple of (trained_model, train_loader, test_loader).
@@ -92,12 +95,15 @@ def train(cfg: ExperimentConfig) -> tuple[ShuffleNetV2, DataLoader, DataLoader]:
     print(f"  Training: {cfg}")
     print(f"{'='*60}")
 
-    device = torch.device("cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    print(f"  Using device: {device}")
     model  = build_model(cfg).to(device)
 
     print(f"  Parameters: {model.count_parameters():,}")
 
-    train_loader, test_loader = build_dataloaders(cfg)
+    train_loader, test_loader = build_dataloaders(cfg, device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(
         model.parameters(),

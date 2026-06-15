@@ -45,12 +45,27 @@ def parse_args() -> argparse.Namespace:
         metavar="W",
         help="Only run configs for one width multiplier (e.g. --width-only 0.5)."
     )
+    mode.add_argument(
+        "--phase1",
+        action="store_true",
+        help="Run Phase 1: Train accuracy-critical configurations on GPU/CPU."
+    )
+    mode.add_argument(
+        "--phase2",
+        action="store_true",
+        help="Run Phase 2: CPU energy & latency profiling for all configurations."
+    )
 
     # Single-run options
     parser.add_argument("--width",   type=float, default=1.0, help="Width multiplier")
     parser.add_argument("--threads", type=int,   default=4,   help="CPU thread count")
     parser.add_argument("--batch",   type=int,   default=32,  help="Batch size")
     parser.add_argument("--res",     type=int,   default=28,  help="Input resolution")
+
+    # Phase 1 options
+    parser.add_argument("--epochs",  type=int,   default=10,  help="Phase 1: Training epochs per model (default: 10)")
+    parser.add_argument("--train-batch-size", type=int, default=64, help="Phase 1: Training batch size (default: 64)")
+    parser.add_argument("--device",  type=str,   default=None,help="Phase 1: Device to train on (cuda/cpu, default: cuda if available)")
 
     # Grid search options
     parser.add_argument(
@@ -83,6 +98,19 @@ def main() -> None:
         print(f"\nRunning {len(configs)} configs for width={args.width_only}x\n")
         for cfg in configs:
             run_one(cfg)
+
+    elif args.phase1:
+        from experiments.train_phase1 import run_phase1
+        run_phase1(
+            epochs=args.epochs,
+            batch_size=args.train_batch_size,
+            device_str=args.device,
+            no_resume=args.no_resume
+        )
+
+    elif args.phase2:
+        from experiments.profile_phase2 import run_phase2
+        run_phase2(no_resume=args.no_resume)
 
     else:
         # Default: full grid search

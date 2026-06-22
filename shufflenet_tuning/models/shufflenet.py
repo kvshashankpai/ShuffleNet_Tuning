@@ -147,3 +147,84 @@ class ShuffleNetV2(nn.Module):
             f"threads={self.intra_op_threads}, "
             f"params={self.count_parameters():,})"
         )
+
+
+class QuantizableShuffleNetV2(ShuffleNetV2):
+    """
+    Quantizable ShuffleNetV2 subclass equipped with QuantStub/DeQuantStub
+    and a custom fuse_model method for static quantization (PTQ).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.quant = torch.ao.quantization.QuantStub()
+        self.dequant = torch.ao.quantization.DeQuantStub()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _prev_threads: int | None = None
+        if self.intra_op_threads > 0:
+            _prev_threads = torch.get_num_threads()
+            torch.set_num_threads(self.intra_op_threads)
+
+        try:
+            x = self.quant(x)
+            x = self.stage1(x)
+            x = self.stage2(x)
+            x = self.stage3(x)
+            x = self.stage4(x)
+            x = self.conv5(x)
+            x = self.global_pool(x).flatten(1)
+            x = self.classifier(x)
+            x = self.dequant(x)
+        finally:
+            if _prev_threads is not None:
+                torch.set_num_threads(_prev_threads)
+
+        return x
+
+    def fuse_model(self) -> None:
+        """
+        Fuses modules (Conv + BN + ReLU) in place to prepare for static quantization.
+        """
+        # Fuse stage 1 (Conv2d, BatchNorm2d, ReLU)
+        torch.ao.quantization.fuse_modules(
+            self.stage1, [["0", "1", "2"]], inplace=True
+        )
+
+        # Fuse stage 2, 3, 4 blocks
+        for stage in [self.stage2, self.stage3, self.stage4]:
+            for block in stage:
+                if block.stride == 1:
+                    # branch_right:
+                    # 0: Conv2d, 1: BatchNorm2d, 2: ReLU
+                    # 3: Conv2d (depthwise), 4: BatchNorm2d
+                    # 5: Conv2d (pointwise), 6: BatchNorm2d, 7: ReLU
+                    torch.ao.quantization.fuse_modules(
+                        block.branch_right,
+                        [["0", "1", "2"], ["3", "4"], ["5", "6", "7"]],
+                        inplace=True,
+                    )
+                else:
+                    # branch_left:
+                    # 0: Conv2d (depthwise), 1: BatchNorm2d
+                    # 2: Conv2d (pointwise), 3: BatchNorm2d, 4: ReLU
+                    torch.ao.quantization.fuse_modules(
+                        block.branch_left,
+                        [["0", "1"], ["2", "3", "4"]],
+                        inplace=True,
+                    )
+                    # branch_right:
+                    # 0: Conv2d, 1: BatchNorm2d, 2: ReLU
+                    # 3: Conv2d (depthwise), 4: BatchNorm2d
+                    # 5: Conv2d, 6: BatchNorm2d, 7: ReLU
+                    torch.ao.quantization.fuse_modules(
+                        block.branch_right,
+                        [["0", "1", "2"], ["3", "4"], ["5", "6", "7"]],
+                        inplace=True,
+                    )
+
+        # Fuse conv5
+        torch.ao.quantization.fuse_modules(
+            self.conv5, [["0", "1", "2"]], inplace=True
+        )
+

@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from configs.experiment_config import ExperimentConfig
-from models.shufflenet import ShuffleNetV2
+from models.shufflenet import QuantizableShuffleNetV2
 
 
 def build_dataloaders(cfg: ExperimentConfig, device: torch.device = None) -> tuple[DataLoader, DataLoader]:
@@ -69,9 +69,9 @@ def build_dataloaders(cfg: ExperimentConfig, device: torch.device = None) -> tup
     return train_loader, test_loader
 
 
-def build_model(cfg: ExperimentConfig) -> ShuffleNetV2:
-    """Instantiates a ShuffleNetV2 from a config."""
-    return ShuffleNetV2(
+def build_model(cfg: ExperimentConfig) -> QuantizableShuffleNetV2:
+    """Instantiates a QuantizableShuffleNetV2 from a config."""
+    return QuantizableShuffleNetV2(
         width_multiplier=cfg.width_multiplier,
         num_classes=cfg.num_classes,
         in_channels=cfg.in_channels,
@@ -79,9 +79,9 @@ def build_model(cfg: ExperimentConfig) -> ShuffleNetV2:
     )
 
 
-def train(cfg: ExperimentConfig, device: torch.device = None) -> tuple[ShuffleNetV2, DataLoader, DataLoader]:
+def train(cfg: ExperimentConfig, device: torch.device = None) -> tuple[QuantizableShuffleNetV2, DataLoader, DataLoader]:
     """
-    Trains a ShuffleNetV2 for the given config.
+    Trains a QuantizableShuffleNetV2 for the given config.
 
     Args:
         cfg: Fully populated ExperimentConfig for this run.

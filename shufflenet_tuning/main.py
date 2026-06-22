@@ -1,26 +1,27 @@
 """
 main.py
 -------
-Single entrypoint for all experiment modes.
+Single entrypoint for ShuffleNetV2 tuning and optimization experiments.
 
 Usage:
-    # Run the full 72-config grid search
+    # Run the Multi-Objective Bayesian Optimization & PTQ (default)
     python main.py
 
-    # Preview all configs without training (dry run)
-    python main.py --dry-run
+    # Run the optimization with custom trial and epoch count
+    python main.py --trials 30 --optuna-epochs 2
 
-    # Run a single custom config (useful for quick sanity checks)
-    python main.py --single --width 0.5 --threads 4 --batch 32 --res 28
-
-    # Run only configs for one width multiplier
-    python main.py --width-only 1.0
+    # Run Phase 1 training (accuracy-critical configurations)
+    python main.py --phase1 --epochs 10 --train-batch-size 64
 """
 
 import argparse
+import sys
+from pathlib import Path
 
-from configs.base_config import generate_configs_for_width, generate_single_config
-from experiments.grid_search import run_grid, run_one
+# Ensure the parent directory is in the path
+sys.path.append(str(Path(__file__).resolve().parent))
+
+from experiments.optuna_optimize import run_optimization
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,20 +31,10 @@ def parse_args() -> argparse.Namespace:
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
-        "--dry-run",
+        "--optuna",
         action="store_true",
-        help="Print all configs without training."
-    )
-    mode.add_argument(
-        "--single",
-        action="store_true",
-        help="Run a single config (use --width, --threads, --batch, --res to set it)."
-    )
-    mode.add_argument(
-        "--width-only",
-        type=float,
-        metavar="W",
-        help="Only run configs for one width multiplier (e.g. --width-only 0.5)."
+        default=True,
+        help="Run Phase 2 Multi-Objective Bayesian Optimization using Optuna & PTQ (default)."
     )
     mode.add_argument(
         "--phase1",
@@ -51,27 +42,50 @@ def parse_args() -> argparse.Namespace:
         help="Run Phase 1: Train accuracy-critical configurations on GPU/CPU."
     )
     mode.add_argument(
-        "--phase2",
+        "--phase2-legacy",
         action="store_true",
-        help="Run Phase 2: CPU energy & latency profiling for all configurations."
+        help="Run legacy Phase 2: CPU energy & latency profiling for all grid configurations."
     )
 
-    # Single-run options
-    parser.add_argument("--width",   type=float, default=1.0, help="Width multiplier")
-    parser.add_argument("--threads", type=int,   default=4,   help="CPU thread count")
-    parser.add_argument("--batch",   type=int,   default=32,  help="Batch size")
-    parser.add_argument("--res",     type=int,   default=28,  help="Input resolution")
+    # Optuna / Phase 2 settings
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=20,
+        help="Number of trials for the Optuna study (default: 20)."
+    )
+    parser.add_argument(
+        "--optuna-epochs",
+        type=int,
+        default=1,
+        help="Number of epochs to train the model per Optuna trial (default: 1)."
+    )
 
-    # Phase 1 options
-    parser.add_argument("--epochs",  type=int,   default=10,  help="Phase 1: Training epochs per model (default: 10)")
-    parser.add_argument("--train-batch-size", type=int, default=64, help="Phase 1: Training batch size (default: 64)")
-    parser.add_argument("--device",  type=str,   default=None,help="Phase 1: Device to train on (cuda/cpu, default: cuda if available)")
+    # Phase 1 / Training settings
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=10,
+        help="Phase 1: Training epochs per model (default: 10)."
+    )
+    parser.add_argument(
+        "--train-batch-size",
+        type=int,
+        default=64,
+        help="Phase 1: Training batch size (default: 64)."
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to train on (cuda/cpu, default: cuda if available)."
+    )
 
-    # Grid search options
+    # Legacy settings
     parser.add_argument(
         "--no-resume",
         action="store_true",
-        help="Start fresh — ignore any previously completed configs in the CSV."
+        help="Start fresh — ignore any previously completed configs/checkpoints."
     )
 
     return parser.parse_args()
@@ -80,26 +94,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if args.dry_run:
-        run_grid(dry_run=True)
-
-    elif args.single:
-        cfg = generate_single_config(
-            width_multiplier=args.width,
-            intra_op_threads=args.threads,
-            batch_size=args.batch,
-            input_size=args.res,
-        )
-        print(f"\nRunning single config: {cfg}\n")
-        run_one(cfg)
-
-    elif args.width_only is not None:
-        configs = generate_configs_for_width(args.width_only)
-        print(f"\nRunning {len(configs)} configs for width={args.width_only}x\n")
-        for cfg in configs:
-            run_one(cfg)
-
-    elif args.phase1:
+    if args.phase1:
         from experiments.train_phase1 import run_phase1
         run_phase1(
             epochs=args.epochs,
@@ -108,13 +103,17 @@ def main() -> None:
             no_resume=args.no_resume
         )
 
-    elif args.phase2:
+    elif args.phase2_legacy:
         from experiments.profile_phase2 import run_phase2
         run_phase2(no_resume=args.no_resume)
 
     else:
-        # Default: full grid search
-        run_grid(resume=not args.no_resume)
+        # Default option: Multi-Objective Bayesian Optimization & PTQ
+        run_optimization(
+            n_trials=args.trials,
+            epochs_per_trial=args.optuna_epochs,
+            device_str=args.device
+        )
 
 
 if __name__ == "__main__":

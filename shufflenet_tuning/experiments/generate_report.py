@@ -99,7 +99,7 @@ def main() -> None:
         plt.scatter(xs, ys, s=18, alpha=0.8, label=str(w), color=width_to_color[w])
     px = [t.values[1] * 1000 for t in pareto]
     py = [t.values[0]         for t in pareto]
-    plt.plot(px, py, "r--", marker="x", markersize=6, linewidth=1.2, label="Pareto Frontier")
+    plt.plot(px, py, "rx", markersize=7, label="3D Pareto Optimal Points")
     plt.xscale("log")
     plt.xlabel("Latency (ms, log scale)")
     plt.ylabel("Accuracy (%)")
@@ -117,7 +117,7 @@ def main() -> None:
         plt.scatter(xs, ys, s=18, alpha=0.8, label=str(w), color=width_to_color[w])
     px = [t.values[2] for t in pareto]
     py = [t.values[0] for t in pareto]
-    plt.plot(px, py, "r--", marker="x", markersize=6, linewidth=1.2, label="Pareto Frontier")
+    plt.plot(px, py, "rx", markersize=7, label="3D Pareto Optimal Points")
     plt.xscale("log")
     plt.xlabel("Energy (kWh, log scale)")
     plt.ylabel("Accuracy (%)")

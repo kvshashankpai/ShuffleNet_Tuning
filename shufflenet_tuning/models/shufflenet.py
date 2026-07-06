@@ -78,6 +78,7 @@ class ShuffleNetV2(nn.Module):
 
         # ── Head ──────────────────────────────────────────────────────────────────
         self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.dropout = nn.Dropout(p=0.0)
         self.classifier = nn.Linear(channels[4], num_classes)
 
         self._init_weights()
@@ -109,26 +110,14 @@ class ShuffleNetV2(nn.Module):
     # ─────────────────────────────────────────────────────────────────────────────
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Scoped thread override: set → run → restore
-        # This ensures one model config doesn't pollute the thread state
-        # for other models running in the same process.
-        _prev_threads: int | None = None
-        if self.intra_op_threads > 0:
-            _prev_threads = torch.get_num_threads()
-            torch.set_num_threads(self.intra_op_threads)
-
-        try:
-            x = self.stage1(x)
-            x = self.stage2(x)
-            x = self.stage3(x)
-            x = self.stage4(x)
-            x = self.conv5(x)
-            x = self.global_pool(x).flatten(1)
-            x = self.classifier(x)
-        finally:
-            # Always restore — even if an exception is raised mid-forward
-            if _prev_threads is not None:
-                torch.set_num_threads(_prev_threads)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+        x = self.conv5(x)
+        x = self.global_pool(x).flatten(1)
+        x = self.dropout(x)
+        x = self.classifier(x)
 
         return x
 
@@ -161,24 +150,16 @@ class QuantizableShuffleNetV2(ShuffleNetV2):
         self.dequant = torch.ao.quantization.DeQuantStub()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        _prev_threads: int | None = None
-        if self.intra_op_threads > 0:
-            _prev_threads = torch.get_num_threads()
-            torch.set_num_threads(self.intra_op_threads)
-
-        try:
-            x = self.quant(x)
-            x = self.stage1(x)
-            x = self.stage2(x)
-            x = self.stage3(x)
-            x = self.stage4(x)
-            x = self.conv5(x)
-            x = self.global_pool(x).flatten(1)
-            x = self.classifier(x)
-            x = self.dequant(x)
-        finally:
-            if _prev_threads is not None:
-                torch.set_num_threads(_prev_threads)
+        x = self.quant(x)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+        x = self.conv5(x)
+        x = self.global_pool(x).flatten(1)
+        x = self.dropout(x)
+        x = self.classifier(x)
+        x = self.dequant(x)
 
         return x
 
@@ -227,4 +208,3 @@ class QuantizableShuffleNetV2(ShuffleNetV2):
         torch.ao.quantization.fuse_modules(
             self.conv5, [["0", "1", "2"]], inplace=True
         )
-

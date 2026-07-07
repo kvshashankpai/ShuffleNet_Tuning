@@ -5,7 +5,7 @@ import os
 import numpy as np
 
 # Create output directory
-output_dir = "output_graphs"
+output_dir = "final_plots"
 os.makedirs(output_dir, exist_ok=True)
 
 # Load data

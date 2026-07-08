@@ -8,6 +8,8 @@ Key design decisions:
   - intra_op_threads controls PyTorch's CPU thread pool scoped to this model's
     forward pass only — previous thread count is always restored afterward
   - width_multiplier selects the channel width tier (0.5x through 2.0x)
+  - stage_repeats controls the depth of stages 2–4 (tunable in v2)
+  - fc_hidden_dim optionally adds a FC+BN+ReLU layer before the classifier
 """
 
 import torch
@@ -26,6 +28,11 @@ class ShuffleNetV2(nn.Module):
         in_channels:       Input image channels (3 for RGB MedMNIST).
         intra_op_threads:  CPU thread count for this model's forward pass.
                            0 = use PyTorch default (no override).
+        stage_repeats:     List of 3 ints controlling depth of stages 2, 3, 4.
+                           Default [4, 8, 4] is the standard ShuffleNetV2 config.
+        fc_hidden_dim:     If > 0, adds an FC(conv5_ch → fc_hidden_dim) + BN + ReLU
+                           layer between global_pool and the final classifier.
+                           0 = no extra layer (original architecture).
     """
 
     # Maps width multiplier → [stage1_ch, stage2_ch, stage3_ch, stage4_ch, conv5_ch]
@@ -35,7 +42,8 @@ class ShuffleNetV2(nn.Module):
         1.5: [24, 176, 352, 704, 1024],
         2.0: [24, 244, 488, 976, 2048],
     }
-    STAGE_REPEATS: list[int] = [4, 8, 4]
+    # Default stage repeats — can be overridden via constructor
+    DEFAULT_STAGE_REPEATS: list[int] = [4, 8, 4]
 
     def __init__(
         self,
@@ -43,6 +51,8 @@ class ShuffleNetV2(nn.Module):
         num_classes: int = 9,
         in_channels: int = 3,
         intra_op_threads: int = 0,
+        stage_repeats: list[int] | None = None,
+        fc_hidden_dim: int = 0,
     ):
         super().__init__()
 
@@ -54,7 +64,14 @@ class ShuffleNetV2(nn.Module):
 
         self.width_multiplier = width_multiplier
         self.intra_op_threads = intra_op_threads
+        self.fc_hidden_dim = fc_hidden_dim
         channels = self.STAGE_CHANNELS[width_multiplier]
+
+        # Resolve stage repeats
+        if stage_repeats is None:
+            stage_repeats = self.DEFAULT_STAGE_REPEATS
+        assert len(stage_repeats) == 3, "stage_repeats must have exactly 3 elements"
+        self.stage_repeats = stage_repeats
 
         # ── Stage 1: initial stem conv (stride=1 to keep spatial info on 28x28) ──
         self.stage1 = nn.Sequential(
@@ -65,9 +82,9 @@ class ShuffleNetV2(nn.Module):
         )
 
         # ── Stages 2–4: stacked ShuffleV2 blocks ─────────────────────────────────
-        self.stage2 = self._make_stage(channels[0], channels[1], self.STAGE_REPEATS[0])
-        self.stage3 = self._make_stage(channels[1], channels[2], self.STAGE_REPEATS[1])
-        self.stage4 = self._make_stage(channels[2], channels[3], self.STAGE_REPEATS[2])
+        self.stage2 = self._make_stage(channels[0], channels[1], self.stage_repeats[0])
+        self.stage3 = self._make_stage(channels[1], channels[2], self.stage_repeats[1])
+        self.stage4 = self._make_stage(channels[2], channels[3], self.stage_repeats[2])
 
         # ── Conv5: pointwise projection to final feature dim ──────────────────────
         self.conv5 = nn.Sequential(
@@ -79,7 +96,18 @@ class ShuffleNetV2(nn.Module):
         # ── Head ──────────────────────────────────────────────────────────────────
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(p=0.0)
-        self.classifier = nn.Linear(channels[4], num_classes)
+
+        # Optional FC hidden layer (professor's suggestion: reduce noise)
+        if fc_hidden_dim > 0:
+            self.fc_hidden = nn.Sequential(
+                nn.Linear(channels[4], fc_hidden_dim),
+                nn.BatchNorm1d(fc_hidden_dim),
+                nn.ReLU(inplace=True),
+            )
+            self.classifier = nn.Linear(fc_hidden_dim, num_classes)
+        else:
+            self.fc_hidden = None
+            self.classifier = nn.Linear(channels[4], num_classes)
 
         self._init_weights()
 
@@ -98,7 +126,7 @@ class ShuffleNetV2(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.GroupNorm)):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Linear):
@@ -117,6 +145,8 @@ class ShuffleNetV2(nn.Module):
         x = self.conv5(x)
         x = self.global_pool(x).flatten(1)
         x = self.dropout(x)
+        if self.fc_hidden is not None:
+            x = self.fc_hidden(x)
         x = self.classifier(x)
 
         return x
@@ -134,6 +164,8 @@ class ShuffleNetV2(nn.Module):
             f"ShuffleNetV2("
             f"width={self.width_multiplier}x, "
             f"threads={self.intra_op_threads}, "
+            f"repeats={self.stage_repeats}, "
+            f"fc_hidden={self.fc_hidden_dim}, "
             f"params={self.count_parameters():,})"
         )
 
@@ -158,6 +190,8 @@ class QuantizableShuffleNetV2(ShuffleNetV2):
         x = self.conv5(x)
         x = self.global_pool(x).flatten(1)
         x = self.dropout(x)
+        if self.fc_hidden is not None:
+            x = self.fc_hidden(x)
         x = self.classifier(x)
         x = self.dequant(x)
 
@@ -208,3 +242,9 @@ class QuantizableShuffleNetV2(ShuffleNetV2):
         torch.ao.quantization.fuse_modules(
             self.conv5, [["0", "1", "2"]], inplace=True
         )
+
+        # Fuse fc_hidden if present (Linear + BatchNorm1d + ReLU)
+        if self.fc_hidden is not None:
+            torch.ao.quantization.fuse_modules(
+                self.fc_hidden, [["0", "1", "2"]], inplace=True
+            )

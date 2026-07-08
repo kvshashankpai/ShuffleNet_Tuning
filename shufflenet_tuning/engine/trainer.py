@@ -6,9 +6,10 @@ CPU-only training loop for one ExperimentConfig.
 Responsibilities:
   - Build MedMNIST DataLoaders with the correct input_size transform
   - Instantiate the model with the config's hyperparameters
-  - Build optimizer (Adam / SGD / RMSprop) and LR scheduler
+  - Build optimizer (Adam / SGD) and LR scheduler
     (CosineAnnealingLR / StepLR / OneCycleLR) from config
-  - Run the training loop with CrossEntropyLoss (+ optional label smoothing)
+  - Build criterion (CrossEntropy / KLDivergence / FocalLoss) from config
+  - Run the training loop
   - Return the trained model (for subsequent evaluation)
 
 NOTE: All training is CPU-only. GPU/CUDA paths have been removed to ensure
@@ -17,6 +18,7 @@ NOTE: All training is CPU-only. GPU/CUDA paths have been removed to ensure
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -27,6 +29,41 @@ from models.shufflenet import QuantizableShuffleNetV2
 # Always CPU — no CUDA paths
 DEVICE = torch.device("cpu")
 
+
+# ── Focal Loss ────────────────────────────────────────────────────────────────
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for multi-class classification (Lin et al., 2017).
+
+    Down-weights easy examples and focuses training on hard-to-classify samples.
+    Particularly useful for imbalanced medical imaging datasets.
+
+    Args:
+        gamma:           Focusing parameter. Higher gamma = more focus on hard examples.
+        label_smoothing: Label smoothing epsilon applied before focal weighting.
+        reduction:       'mean' or 'sum'.
+    """
+
+    def __init__(self, gamma: float = 2.0, label_smoothing: float = 0.0, reduction: str = "mean"):
+        super().__init__()
+        self.gamma = gamma
+        self.label_smoothing = label_smoothing
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = F.cross_entropy(inputs, targets, reduction="none", label_smoothing=self.label_smoothing)
+        pt = torch.exp(-ce_loss)  # probability of correct class
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        elif self.reduction == "sum":
+            return focal_loss.sum()
+        return focal_loss
+
+
+# ── Builder functions ─────────────────────────────────────────────────────────
 
 def build_dataloaders(cfg: ExperimentConfig, device: torch.device = None) -> tuple[DataLoader, DataLoader]:
     """
@@ -88,9 +125,35 @@ def build_model(cfg: ExperimentConfig) -> QuantizableShuffleNetV2:
         num_classes=cfg.num_classes,
         in_channels=cfg.in_channels,
         intra_op_threads=cfg.intra_op_threads,
+        stage_repeats=cfg.resolved_stage_repeats,
+        fc_hidden_dim=cfg.fc_hidden_dim,
     )
     model.dropout.p = cfg.dropout
     return model
+
+
+def build_criterion(cfg: ExperimentConfig) -> nn.Module:
+    """
+    Builds the loss function from cfg.loss_name.
+
+    Supported:
+      - "cross_entropy"  → CrossEntropyLoss with label smoothing
+      - "kl_divergence"  → KLDivLoss (with log-softmax on model output, smoothed targets)
+      - "focal"          → FocalLoss (gamma=2.0, focuses on hard examples)
+    """
+    name = cfg.loss_name.lower()
+    if name == "cross_entropy":
+        return nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
+    elif name == "kl_divergence":
+        # KLDivLoss will be used with a wrapper in the training loop
+        return nn.KLDivLoss(reduction="batchmean")
+    elif name == "focal":
+        return FocalLoss(gamma=2.0, label_smoothing=cfg.label_smoothing)
+    else:
+        raise ValueError(
+            f"Unknown loss '{cfg.loss_name}'. "
+            f"Choose from: 'cross_entropy', 'kl_divergence', 'focal'."
+        )
 
 
 def build_optimizer(cfg: ExperimentConfig, model: nn.Module) -> optim.Optimizer:
@@ -100,7 +163,6 @@ def build_optimizer(cfg: ExperimentConfig, model: nn.Module) -> optim.Optimizer:
     Supported:
       - "adam"    → Adam (momentum-free, ignores cfg.momentum)
       - "sgd"     → SGD with Nesterov momentum
-      - "rmsprop" → RMSprop with momentum
     """
     name = cfg.optimizer_name.lower()
     if name == "adam":
@@ -117,17 +179,10 @@ def build_optimizer(cfg: ExperimentConfig, model: nn.Module) -> optim.Optimizer:
             weight_decay=cfg.weight_decay,
             nesterov=True,
         )
-    elif name == "rmsprop":
-        return optim.RMSprop(
-            model.parameters(),
-            lr=cfg.learning_rate,
-            momentum=cfg.momentum,
-            weight_decay=cfg.weight_decay,
-        )
     else:
         raise ValueError(
             f"Unknown optimizer '{cfg.optimizer_name}'. "
-            f"Choose from: 'adam', 'sgd', 'rmsprop'."
+            f"Choose from: 'adam', 'sgd'."
         )
 
 
@@ -168,6 +223,30 @@ def build_scheduler(
         )
 
 
+def _compute_kl_loss(
+    criterion: nn.Module,
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    num_classes: int,
+    label_smoothing: float,
+) -> torch.Tensor:
+    """
+    Computes KL Divergence loss with smoothed one-hot targets.
+
+    KLDivLoss expects log-probabilities as input and probability targets.
+    We apply label smoothing to the one-hot target distribution.
+    """
+    log_probs = F.log_softmax(outputs, dim=1)
+
+    # Build smoothed one-hot targets
+    with torch.no_grad():
+        targets = torch.zeros_like(log_probs)
+        targets.fill_(label_smoothing / (num_classes - 1))
+        targets.scatter_(1, labels.unsqueeze(1), 1.0 - label_smoothing)
+
+    return criterion(log_probs, targets)
+
+
 def train(cfg: ExperimentConfig, device: torch.device = None) -> tuple[QuantizableShuffleNetV2, DataLoader, DataLoader]:
     """
     Trains a QuantizableShuffleNetV2 on CPU for the given config.
@@ -194,7 +273,8 @@ def train(cfg: ExperimentConfig, device: torch.device = None) -> tuple[Quantizab
 
     train_loader, test_loader = build_dataloaders(cfg, device=DEVICE)
 
-    criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
+    criterion = build_criterion(cfg)
+    is_kl = cfg.loss_name.lower() == "kl_divergence"
 
     optimizer = build_optimizer(cfg, model)
 
@@ -214,7 +294,12 @@ def train(cfg: ExperimentConfig, device: torch.device = None) -> tuple[Quantizab
 
             optimizer.zero_grad()
             outputs = model(images)
-            loss    = criterion(outputs, labels)
+
+            if is_kl:
+                loss = _compute_kl_loss(criterion, outputs, labels, cfg.num_classes, cfg.label_smoothing)
+            else:
+                loss = criterion(outputs, labels)
+
             loss.backward()
             optimizer.step()
 

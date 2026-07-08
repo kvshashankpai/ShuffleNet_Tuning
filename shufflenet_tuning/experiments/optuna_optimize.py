@@ -6,14 +6,14 @@ Quantization (PTQ) pipeline for ShuffleNet V2 on MedMNIST.
 
 Search Space (CPU-only, 10 hyperparameters):
   Discrete (categorical):
-    - width_multiplier:  [0.5, 1.0, 1.5, 2.0]
-    - input_resolution:  [20, 24, 28, 32]
+    - width_multiplier:  [0.5, 1.0, 1.5, 2.0] (look at the layer depth as well)
+    - input_resolution:  [20, 24, 28, 32] (add 64)
     - batch_size:        [4, 8, 16, 32, 64, 128]
     - intra_op_threads:  [1, 2, 4, 8]
     - dropout:           [0.0, 0.1, 0.2, 0.3, 0.5]
     - optimizer_name:    ["adam", "sgd", "rmsprop"]
     - scheduler_name:    ["cosine", "step", "onecycle"]
-  Continuous (BO-sampled):
+  Continuous (BO-sampled): 
     - learning_rate:     log-uniform [1e-5, 3e-1]
     - weight_decay:      log-uniform [1e-6, 1e-2]
     - label_smoothing:   uniform [0.0, 0.2]
@@ -26,6 +26,9 @@ Objectives (multi-objective MOTPE):
 
 All training and profiling is CPU-only.
 """
+
+# try completely connected layer at the end withouyt changing the intermediaries 
+# try with adam and sgd only 
 
 import os
 import sys
@@ -206,7 +209,7 @@ def finalize_from_study(
 
 
 def run_optimization(
-    n_trials: int = 150,
+    n_trials: int = 50,
     search_epochs: int = 2,
     final_epochs: int = 8,
     device_str: str = None,  # kept for CLI compatibility, ignored (CPU-only)
@@ -423,7 +426,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Run Multi-Objective Bayesian Optimization & Post-Training Quantization."
     )
-    parser.add_argument("--trials", type=int, default=150, help="Number of trials.")
+    parser.add_argument("--trials", type=int, default=50, help="Number of trials.")
     parser.add_argument("--epochs", type=int, default=2,   help="Training epochs per trial.")
     args = parser.parse_args()
 

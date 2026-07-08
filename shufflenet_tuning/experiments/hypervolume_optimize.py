@@ -156,7 +156,7 @@ class _HVTracker:
 
 
 def run_hypervolume_optimization(
-    n_trials: int = 150,
+    n_trials: int = 50,
     search_epochs: int = 2,
     final_epochs: int = 8,
     device_str: str = None,  # ignored, CPU-only
@@ -399,7 +399,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Hypervolume Maximization BO for ShuffleNetV2 on MedMNIST (CPU)."
     )
-    parser.add_argument("--trials", type=int, default=150, help="Number of BO trials.")
+    parser.add_argument("--trials", type=int, default=50, help="Number of BO trials.")
     parser.add_argument("--epochs", type=int, default=2,   help="Training epochs per trial.")
     parser.add_argument("--final-epochs", type=int, default=8, help="Final retraining epochs.")
     args = parser.parse_args()

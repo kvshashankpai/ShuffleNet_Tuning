@@ -9,6 +9,10 @@ Usage:
     # Multi-Objective Bayesian Optimization (MOTPE) — default
     python main.py
 
+    # v2 Refined MOTPE (new loss functions, FC layer, depth tuning)
+    python main.py --v2
+    python main.py --v2 --trials 150 --optuna-epochs 2
+
     # Single-Objective Hypervolume Maximization BO
     python main.py --hypervolume
 
@@ -68,6 +72,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=True,
         help="[DEFAULT] Run Multi-Objective MOTPE Bayesian Optimization (3 objectives: Accuracy, Latency, Energy).",
+    )
+    mode.add_argument(
+        "--v2",
+        action="store_true",
+        help=(
+            "Run v2 Refined MOTPE: new loss functions (CE/KLDiv/Focal), "
+            "optional FC hidden layer, tunable stage depth, Adam/SGD only, narrowed LR."
+        ),
     )
     mode.add_argument(
         "--hypervolume",
@@ -161,7 +173,16 @@ def main() -> None:
             print(f"[log] writing to {log_path}")
             print(f"[device] CPU-only mode (all GPU paths disabled)")
 
-            if args.hypervolume:
+            if args.v2:
+                from experiments.optuna_optimize_v2 import run_optimization_v2
+                run_optimization_v2(
+                    n_trials=args.trials,
+                    search_epochs=args.optuna_epochs,
+                    final_epochs=args.final_epochs,
+                    n_jobs=args.workers,
+                )
+
+            elif args.hypervolume:
                 from experiments.hypervolume_optimize import run_hypervolume_optimization
                 run_hypervolume_optimization(
                     n_trials=args.trials,
